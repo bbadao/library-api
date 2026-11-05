@@ -59,6 +59,13 @@ def init_db():
 
 # ---------- helpers ----------
 
+#checking whether the email is educational
+def check_email_edu(email):
+    if not check(email, "email"):
+        return False
+    domain = str(email).rsplit("@", 1)[1].lower()
+    return "edu" in domain.split(".")
+        
 
 def check(value, kind):
     if kind == "email":
@@ -99,7 +106,7 @@ def notify(kind, title="", send=True):
 
 # ---------- books ----------
 
-
+#api routes are done ambigously, books is written almost everywhere
 @app.route("/books", methods=["GET"])
 def list_books():
     conn = sqlite3.connect("library.db")
