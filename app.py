@@ -61,28 +61,28 @@ def init_db():
 
 #checking whether the email is educational
 def check_email_edu(email):
-    if not check(email, "email"):
+    if not check_email(email):
         return False
     domain = str(email).rsplit("@", 1)[1].lower()
     return "edu" in domain.split(".")
-        
 
-def check(value, kind):
-    if kind == "email":
-        return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(value)) is not None
-    elif kind == "isbn":
-        digits = str(value).replace("-", "")
-        return digits.isdigit() and len(digits) in (10, 13)
-    elif kind == "date":
-        try:
-            date.fromisoformat(str(value))
-            return True
-        except ValueError:
-            return False
-    elif kind == "member_type":
-        return value in ("student", "staff")
-    return False
+#control cohesion was solved, user must know the type checked form function rather than flag
+def check_email(email):
+    return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(email)) is not None
 
+def check_isbn(isbn):
+    digits = str(isbn).replace("-", "")
+    return digits.isdigit() and len(digits) in (10, 13)
+
+def check_date(value):
+    try:
+        date.fromisoformat(str(value))
+        return True
+    except ValueError:
+        return False
+
+def check_member_type(value):
+    return value in ("student", "staff")
 
 def money(x):
     return round(float(x), 2)
@@ -136,7 +136,7 @@ def create_book():
     data = request.get_json(silent=True) or {}
     if not data.get("title") or not data.get("author"):
         return jsonify({"error": "title and author are required"}), 400
-    if not check(data.get("isbn"), "isbn"):
+    if not check_isbn(data.get("isbn")):
         return jsonify({"error": "invalid isbn"}), 400
     conn = sqlite3.connect("library.db")
     cur = conn.execute(
@@ -194,10 +194,10 @@ def create_member():
     data = request.get_json(silent=True) or {}
     if not data.get("name"):
         return jsonify({"error": "name is required"}), 400
-    if not check(data.get("email"), "email"):
+    if not check_email(data.get("email")):
         return jsonify({"error": "invalid email"}), 400
     member_type = data.get("type", "student")
-    if not check(member_type, "member_type"):
+    if not check_member_type(member_type):
         return jsonify({"error": "type must be student or staff"}), 400
     conn = sqlite3.connect("library.db")
     existing = conn.execute("SELECT * FROM members WHERE email = ?", (data["email"],)).fetchone()
@@ -253,7 +253,11 @@ def member_loans(member_id):
 
 # ---------- loans ----------
 
+def calculate_fine(loan, days_late):
+    current_fine = max(0, days_late) * 0.50
+    return current_fine
 
+#the logic of the fine must be external, and reusable; calculate_fine was added
 @app.route("/loans", methods=["GET"])
 def list_loans():
     conn = sqlite3.connect("library.db")
@@ -261,11 +265,9 @@ def list_loans():
     conn.close()
     result = []
     for loan in rows:
-        current_fine = loan[5]
         days_late = (date.today() - date.fromisoformat(loan[3])).days
-        if loan[4] == 0:
-            current_fine = max(0, days_late) * 0.50
-        if request.args.get("overdue") == "true" and (loan[4] == 1 or days_late <= 0):
+        current_fine = calculate_fine(loan, days_late)
+        if request.args.get("overdue") == "true" and (loan[4] == 1 or (loan[4] == 0 and days_late <= 0)):
             continue
         result.append(
             {
@@ -291,10 +293,8 @@ def get_loan(loan_id):
     conn.close()
     if loan is None:
         return jsonify({"error": "loan not found"}), 404
-    current_fine = loan[5]
-    if loan[4] == 0:
-        days_late = (date.today() - date.fromisoformat(loan[3])).days
-        current_fine = max(0, days_late) * 0.50
+    days_late = (date.today() - date.fromisoformat(loan[3])).days
+    current_fine = calculate_fine(loan, days_late)
     return jsonify(
         {
             "id": loan[0],
@@ -317,7 +317,7 @@ def create_loan():
     data = request.get_json(silent=True) or {}
     if not data.get("book_id") or not data.get("member_id"):
         return jsonify({"error": "book_id and member_id are required"}), 400
-    if data.get("due_date") and not check(data["due_date"], "date"):
+    if data.get("due_date") and not check_date(data["due_date"]):
         return jsonify({"error": "invalid due_date"}), 400
 
     conn = sqlite3.connect("library.db")
@@ -398,7 +398,7 @@ def return_book(loan_id):
         return jsonify({"error": "loan already returned"}), 409
 
     days_late = (date.today() - date.fromisoformat(loan[3])).days
-    fine = max(0, days_late) * 0.50
+    fine = calculate_fine(loan, days_late)
     conn.execute("UPDATE loans SET returned = 1, fine = ? WHERE id = ?", (fine, loan_id))
     conn.execute("UPDATE books SET available = 1 WHERE id = ?", (loan[1],))
     conn.commit()
@@ -532,7 +532,7 @@ def report_overdue():
     for r in rows:
         days_late = (date.today() - date.fromisoformat(r[3])).days
         if days_late > 0:
-            fine = days_late * 0.5
+            fine = calculate_fine(r, days_late)
             total += fine
             items.append(
                 {"loan_id": r[0], "title": r[1], "member": r[2], "days_late": days_late, "fine": money(fine)}
@@ -552,7 +552,7 @@ def report_summary():
         if loan[4] == 0:
             on_loan += 1
             days_late = (date.today() - date.fromisoformat(loan[3])).days
-            outstanding += max(0, days_late) * 0.50
+            outstanding += calculate_fine(loan, days_late)
         elif loan[6] == 0:
             outstanding += loan[5]
     return jsonify({"total_books": total_books, "on_loan": on_loan, "fines_outstanding": money(outstanding)})
